@@ -79,34 +79,13 @@ TRAIN_TEST_SPLIT = 0.8
 TRAIN_DEV_SPLIT = 0.75
 
 OPENML_DATASET_IDS = [
-    # reg
-    41021,
-    42727,
-    41980,
-    42225,
-    531,
-    # cls
-    41143,
-    31,
-    42733,
-    41162,
-    1067,
-    # multi cls
-    40498,
-    40982,
-    12,
-    40984,
-    4538,
 ]
 
 CUSTOM_DATASETS = [
-    ("04_titanic", "Survived"),
-    ("05_house-prices-advanced-regression-techniques", "SalePrice"),
-    ("06_santander-customer-transaction-prediction", "target"),
-    ("07_icr-identify-age-related-conditions", "Class"),
 ]
 
-DSAGENT_DATASETS = [("concrete-strength", "Strength"), ("smoker-status", "smoking"), ("software-defects", "defects")]
+DSAGENT_DATASETS = [
+    ]
 
 
 def get_split_dataset_path(dataset_name, config):
@@ -369,6 +348,17 @@ def parse_args():
     parser.add_argument(
         "--no_save_analysis_pool", dest="save_analysis_pool", action="store_false", help="Do not save analysis pool"
     )
+    # TODO add argument for dataset and target column
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        help="Dataset name to process.",
+    ) 
+    parser.add_argument(
+        "--target_col",
+        type=str,
+        help="Target column name to process.",
+    )
     parser.set_defaults(save_analysis_pool=True)
     return parser.parse_args()
 
@@ -376,6 +366,10 @@ def parse_args():
 if __name__ == "__main__":
     datasets_dir = DATA_CONFIG["datasets_dir"]
     args = parse_args()
+    # TODO add the dataset and its target column to CUSTOM_DATASETS
+    CUSTOM_DATASETS = [
+        (args.dataset, args.target_col),
+    ]
     force_update = args.force_update
     save_analysis_pool = args.save_analysis_pool
     datasets_dict = {"datasets": {}}
