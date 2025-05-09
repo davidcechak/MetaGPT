@@ -364,7 +364,51 @@ def parse_args():
 
 
 if __name__ == "__main__":
-    datasets_dir = DATA_CONFIG["datasets_dir"]
+    # Hardcode datasets_dir as per user request to simplify path management
+    hardcoded_datasets_dir = "/repository/datasets/"  # Define your hardcoded path here
+    print(f"INFO: SELA dataset.py: Using hardcoded datasets_dir: {hardcoded_datasets_dir}")
+    datasets_dir = hardcoded_datasets_dir  # Use this for the current script execution
+
+    hardcoded_work_dir = "/tmp/sela/workspace" # Define your hardcoded work_dir
+    hardcoded_role_dir = "storage/SELA" # Define your hardcoded role_dir (often relative to work_dir)
+
+    # Attempt to update the global DATA_CONFIG if it's a dictionary.
+    # This helps if functions called from this __main__ block rely on DATA_CONFIG.
+    # Ideally, DATA_CONFIG from utils.py should be correctly loaded,
+    # but this provides a fallback for script execution.
+    if isinstance(DATA_CONFIG, dict):
+        if "datasets_dir" not in DATA_CONFIG or not DATA_CONFIG["datasets_dir"]:
+            print(f"INFO: SELA dataset.py: DATA_CONFIG missing 'datasets_dir', applying hardcoded value.")
+            DATA_CONFIG["datasets_dir"] = hardcoded_datasets_dir
+        else:
+            # If it exists in DATA_CONFIG, prefer that, but update local 'datasets_dir' if it was just hardcoded
+            datasets_dir = DATA_CONFIG["datasets_dir"] 
+            print(f"INFO: SELA dataset.py: Using 'datasets_dir' from DATA_CONFIG: {datasets_dir}")
+
+
+        if "work_dir" not in DATA_CONFIG or not DATA_CONFIG["work_dir"]:
+            print(f"INFO: SELA dataset.py: DATA_CONFIG missing 'work_dir', applying hardcoded value: {hardcoded_work_dir}")
+            DATA_CONFIG["work_dir"] = hardcoded_work_dir
+        if "role_dir" not in DATA_CONFIG or not DATA_CONFIG["role_dir"]:
+            print(f"INFO: SELA dataset.py: DATA_CONFIG missing 'role_dir', applying hardcoded value: {hardcoded_role_dir}")
+            DATA_CONFIG["role_dir"] = hardcoded_role_dir
+    else:
+        # If DATA_CONFIG is not a dict (e.g., None), we need to initialize it for functions that expect it.
+        print(f"WARN: SELA dataset.py: DATA_CONFIG is not a dict or is None. Initializing with hardcoded paths.")
+        DATA_CONFIG = {
+            "datasets_dir": hardcoded_datasets_dir,
+            "work_dir": hardcoded_work_dir,
+            "role_dir": hardcoded_role_dir
+        }
+        # Ensure the local 'datasets_dir' is the one we intend to use
+        datasets_dir = hardcoded_datasets_dir
+        
+    # Ensure datasets_dir is actually set before proceeding
+    assert datasets_dir, "Critical Error: datasets_dir is not set even after hardcoding attempts!"
+    print(f"INFO: SELA dataset.py: Final effective datasets_dir for this run: {datasets_dir}")
+    print(f"INFO: SELA dataset.py: Final DATA_CONFIG for this run: {DATA_CONFIG}")
+
+
     args = parse_args()
     # TODO add the dataset and its target column to CUSTOM_DATASETS
     CUSTOM_DATASETS = [
@@ -373,16 +417,20 @@ if __name__ == "__main__":
     force_update = args.force_update
     save_analysis_pool = args.save_analysis_pool
     datasets_dict = {"datasets": {}}
-    solution_designer = SolutionDesigner()
+    solution_designer = SolutionDesigner() # Requires DATA_CONFIG to be somewhat valid if it uses it internally.
+    
     for dataset_id in OPENML_DATASET_IDS:
+        # Pass the locally determined 'datasets_dir'
         openml_dataset = OpenMLExpDataset("", datasets_dir, dataset_id, force_update=force_update)
         asyncio.run(process_dataset(openml_dataset, solution_designer, save_analysis_pool, datasets_dict))
 
     for dataset_name, target_col in CUSTOM_DATASETS:
+        # Pass the locally determined 'datasets_dir'
         custom_dataset = ExpDataset(dataset_name, datasets_dir, target_col=target_col, force_update=force_update)
         asyncio.run(process_dataset(custom_dataset, solution_designer, save_analysis_pool, datasets_dict))
 
     for dataset_name, target_col in DSAGENT_DATASETS:
+        # Pass the locally determined 'datasets_dir'
         custom_dataset = ExpDataset(dataset_name, datasets_dir, target_col=target_col, force_update=force_update)
         asyncio.run(process_dataset(custom_dataset, solution_designer, save_analysis_pool, datasets_dict))
 
