@@ -423,23 +423,22 @@ class BaseTreeSearch:
         # The 'state' dictionary contains state["task"] which is the task_name.
         # Our current InstructionGenerator uses the global DATA_CONFIG (from utils.py)
         # which should be correctly configured with all necessary paths.
-        task_name_for_ig = state.get("task")
-        if not task_name_for_ig:
-            mcts_logger.log("MCTS", "ERROR: 'task' not found in state for InstructionGenerator initialization.")
-            # Handle error appropriately, e.g., raise ValueError or exit
-            raise ValueError("Task name missing in state for InstructionGenerator.")
-
-        # 'insights_pool_path' can be passed if it's available in 'state' or 'args'
-        # For example, if state['exp_pool_path'] is the intended insights_pool_path:
-        # insights_pool_path_for_ig = state.get("exp_pool_path")
-        # self.instruction_generator = InstructionGenerator(
-        #     task_name=task_name_for_ig,
-        #     insights_pool_path=insights_pool_path_for_ig 
-        # )
-        # For now, assuming InstructionGenerator's default for insights_pool_path is okay if not explicitly passed.
-        # The 'use_fixed_insights' and 'from_scratch' arguments are not used by the current InstructionGenerator signature.
-
-        print(f"INFO: tree_search.py: Initializing InstructionGenerator for task: {task_name_for_ig}")
+        # ...
+        # The 'state' dictionary is passed, along with use_fixed_insights and from_scratch.
+        # The InstructionGenerator's __init__ (from our last update) expects these.
+        
+        print(f"INFO: tree_search.py: Initializing InstructionGenerator with state for task: {state.get('task')}")
+        self.instruction_generator = InstructionGenerator(
+            state=state, 
+            use_fixed_insights=self.use_fixed_insights, 
+            from_scratch=from_scratch
+        )
+        
+        # The 'await self.instruction_generator.initialize()' line should remain commented out or removed,
+        # as our current InstructionGenerator class does not have this async method.
+        # await self.instruction_generator.initialize() 
+        print(f"INFO: tree_search.py: InstructionGenerator initialized.")
+        # ...
         self.instruction_generator = InstructionGenerator(task_name=task_name_for_ig)
         
         # The InstructionGenerator class we are using does not have an async 'initialize()' method.
