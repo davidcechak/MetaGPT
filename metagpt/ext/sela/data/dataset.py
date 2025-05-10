@@ -463,5 +463,6 @@ if __name__ == "__main__":
         output_datasets_yaml_file = str(Path(DATA_CONFIG.get("work_dir", ".")) / "datasets_processed_manifest.yaml")
         print(f"WARN: Using fallback path for processed datasets manifest: {output_datasets_yaml_file}")
         
-    save_datasets_dict_to_yaml(final_datasets_yaml_data, name=output_datasets_yaml_file)
+
+    save_datasets_dict_to_yaml(final_datasets_yaml_data, name_or_path=output_datasets_yaml_file)
     print(f"--- dataset.py script finished ---")
