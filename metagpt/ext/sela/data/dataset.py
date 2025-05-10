@@ -378,41 +378,45 @@ def parse_args():
     return p.parse_args()
 
 if __name__ == "__main__":
-    print("--- Running dataset.py script (SELA v_alternative_output_final) ---")
+    print("--- Running dataset.py script (SELA v_rely_on_utils_config) ---")
     cli_args = parse_args()
 
-    # Global DATA_CONFIG (from utils.py, potentially empty dict if import failed) is updated here
-    # This ensures dataset.py uses consistent, script-defined paths for its operations.
-    cfg_input_datasets_dir = "/repository/datasets/"
-    cfg_work_dir = "/tmp/sela/workspace"
-    cfg_processed_output_dir = str(Path(cfg_work_dir) / "sela_datasets_output")
-
-    if not isinstance(DATA_CONFIG, dict): DATA_CONFIG = {} # Ensure it's a dict
-    DATA_CONFIG["datasets_dir"] = cfg_input_datasets_dir # For reading raw data
-    DATA_CONFIG["work_dir"] = cfg_work_dir               # General SELA work dir
-    DATA_CONFIG["processed_datasets_output_dir"] = cfg_processed_output_dir # For writing processed data
-    DATA_CONFIG["role_dir"] = DATA_CONFIG.get("role_dir", "storage/SELA") # Standard SELA role dir
-
-    print(f"INFO: Effective DATA_CONFIG for this run: {json.dumps(DATA_CONFIG, indent=2, default=str)}")
+    # DATA_CONFIG is imported from the now-modified utils.py.
+    # It should already contain correctly configured:
+    # DATA_CONFIG["datasets_dir"] (for input, e.g., /repository/datasets/)
+    # DATA_CONFIG["work_dir"] (e.g., /tmp/sela/workspace)
+    # DATA_CONFIG["processed_datasets_output_dir"] (e.g., /tmp/sela/workspace/sela_datasets_output)
+    # DATA_CONFIG["role_dir"]
+    # DATA_CONFIG["datasets"] (metadata from datasets.yaml)
     
-    base_input_dir_for_datasets = DATA_CONFIG["datasets_dir"] # Should be /repository/datasets/
-    
+    print(f"INFO: dataset.py __main__: Using DATA_CONFIG from utils.py: {json.dumps(DATA_CONFIG, indent=2, default=str)}")
+
+    # This is the base directory for *reading* raw input datasets, taken from the configured DATA_CONFIG
+    input_dir_for_constructors = DATA_CONFIG.get("datasets_dir")
+    if not input_dir_for_constructors:
+        print("CRITICAL ERROR: 'datasets_dir' for input not found in DATA_CONFIG from utils.py. Exiting.")
+        sys.exit(1)
+    if "processed_datasets_output_dir" not in DATA_CONFIG: # Should be set by utils.py
+        print("CRITICAL ERROR: 'processed_datasets_output_dir' not found in DATA_CONFIG from utils.py. Exiting.")
+        sys.exit(1)
+    if "work_dir" not in DATA_CONFIG: # Should be set by utils.py
+        print("CRITICAL ERROR: 'work_dir' not found in DATA_CONFIG from utils.py. Exiting.")
+        sys.exit(1)
+
     force_update_run = cli_args.force_update
     save_analysis_pool_run = cli_args.save_analysis_pool
     
-    final_datasets_yaml_data = {"datasets": {}} # To be saved as datasets.yaml
+    final_datasets_yaml_data = {"datasets": {}}
 
-    # Corrected SolutionDesigner initialization
     solution_designer_instance = None
     if save_analysis_pool_run:
         try:
-            # Check if SolutionDesigner is the actual class or the placeholder 'object' from failed import
             if SolutionDesigner is object: 
-                raise NameError("SolutionDesigner was not successfully imported or is a placeholder.")
-            solution_designer_instance = SolutionDesigner() # Relies on DATA_CONFIG for its own setup
+                raise NameError("SolutionDesigner was not successfully imported (placeholder 'object' found).")
+            solution_designer_instance = SolutionDesigner() 
             print("INFO: SolutionDesigner initialized for saving analysis pool.")
         except NameError as ne: 
-            print(f"WARN: SolutionDesigner class not available (Import failed or placeholder: {ne}). Cannot save analysis pool.")
+            print(f"WARN: SolutionDesigner class not available ({ne}). Cannot save analysis pool.")
             save_analysis_pool_run = False 
         except Exception as e:
             print(f"WARN: Failed to initialize SolutionDesigner instance: {e}. Analysis pool saving will be disabled.")
@@ -423,7 +427,7 @@ if __name__ == "__main__":
     if cli_args.openml_id:
         print(f"INFO: Processing OpenML ID: {cli_args.openml_id}")
         try:
-            ds = OpenMLExpDataset("", base_input_dir_for_datasets, cli_args.openml_id, 
+            ds = OpenMLExpDataset("", input_dir_for_constructors, cli_args.openml_id, 
                                   target_col=cli_args.target_col, force_update=force_update_run)
             asyncio.run(process_dataset(ds, solution_designer_instance, save_analysis_pool_run, final_datasets_yaml_data))
             num_datasets_processed += 1
@@ -433,36 +437,25 @@ if __name__ == "__main__":
         print(f"INFO: Processing custom dataset '{cli_args.dataset}' (target: '{cli_args.target_col}')")
         if not cli_args.target_col: print("ERROR: --target_col required for --dataset."); sys.exit(1)
         try:
-            ds = ExpDataset(cli_args.dataset, base_input_dir_for_datasets, 
+            ds = ExpDataset(cli_args.dataset, input_dir_for_constructors, 
                             target_col=cli_args.target_col, force_update=force_update_run)
             asyncio.run(process_dataset(ds, solution_designer_instance, save_analysis_pool_run, final_datasets_yaml_data))
             num_datasets_processed += 1
         except Exception as e: print(f"ERROR: Custom dataset {cli_args.dataset} failed: {e}"); traceback.print_exc()
         
-    else: # Fallback to predefined lists (if any were populated)
+    else: 
         print("INFO: No specific dataset arg. Checking predefined lists (OPENML_DATASET_IDS, CUSTOM_DATASETS).")
-        # These lists are empty in this version, so these loops won't run unless modified.
-        for o_id in OPENML_DATASET_IDS: # Example loop
-            # ... (similar processing as above) ...
-            pass
-        for d_name, t_col in CUSTOM_DATASETS: # Example loop
-            # ... (similar processing as above) ...
-            pass
+        # (Loops for predefined lists - these lists are empty in the current dataset.py)
 
-    if num_datasets_processed == 0: print("WARN: No datasets were processed successfully.")
+    if num_datasets_processed == 0: print("WARN: No datasets were processed successfully in this run.")
     else: print(f"INFO: Completed processing for {num_datasets_processed} dataset(s).")
 
-    # Determine path for saving the output datasets.yaml
-    # This should ideally be the one used by the rest of SELA, e.g., .../metagpt/ext/sela/datasets.yaml
-    output_datasets_yaml_file = "datasets.yaml" # Default name
+    output_datasets_yaml_file = "datasets.yaml" 
     try:
         from metagpt.ext.sela.utils import DEFAULT_DATASETS_YAML_PATH as sela_yaml_path
         output_datasets_yaml_file = str(sela_yaml_path)
-        print(f"INFO: Will save processed datasets info to SELA's default: {output_datasets_yaml_file}")
     except ImportError:
         output_datasets_yaml_file = str(Path(DATA_CONFIG.get("work_dir", ".")) / "datasets_processed_manifest.yaml")
-        print(f"WARN: Using fallback path for processed datasets manifest: {output_datasets_yaml_file}")
         
-
     save_datasets_dict_to_yaml(final_datasets_yaml_data, name_or_path=output_datasets_yaml_file)
     print(f"--- dataset.py script finished ---")
