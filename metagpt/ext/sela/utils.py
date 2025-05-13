@@ -1,215 +1,240 @@
 # /tmp/MetaGPT_fork_sela/metagpt/ext/sela/utils.py
-"""Utility helpers that glue SELA to MetaGPT and keep all path configuration in **one** place.
-
-Key points versus the previous revision
---------------------------------------
-* `work_dir` is no longer hard‑wired to ``/tmp/sela/workspace`` – it is resolved in this order:
-    1. the **environment variable** ``SELA_WORK_DIR`` if it is set;
-    2. the value already present in *data.yaml* (written by ``overwrite_data_yaml.sh``);
-    3. the historical fallback ``/tmp/sela/workspace``.
-* `processed_datasets_output_dir` is recomputed from `work_dir` so every module reads & writes under the same run folder (e.g. ``/workspace/runs/<run‑id>/sela_datasets_output``).
-* A tiny bug‑fix: the missing ``import json`` required by ``clean_json_from_rsp`` is now present.
-
-Everything else is unchanged.
-"""
-
-from __future__ import annotations
-
 import os
 import re
-import json
-import sys
-import traceback
 from datetime import datetime
 from pathlib import Path
+import traceback
+import sys
 
-import nbformat  # notebook operations
-from nbformat.notebooknode import NotebookNode
+import nbformat # Used for notebook operations
+from nbformat.notebooknode import NotebookNode # <<< --- ADDED THIS MISSING IMPORT
 import yaml
 from loguru import logger as _logger
 
 try:
     from metagpt.roles.role import Role
-except ImportError:  # when MetaGPT is not installed yet (during image build, for example)
+except ImportError:
     print("WARN: utils.py: Could not import 'Role' from 'metagpt.roles.role'. Using placeholder.")
-    Role = object  # type: ignore
-
-###############################################################################
-# Configuration loading helpers                                               #
-###############################################################################
+    Role = object 
 
 _UTILS_DIR = Path(__file__).parent
 
-
-def _load_yaml(file_name_or_path: str) -> dict:
-    """Load a YAML file returning an **empty dict** on any failure."""
-    config_path = _UTILS_DIR / file_name_or_path
-    if not config_path.exists():
-        # Try relative to the current CWD (fallback for unit‑tests)
-        config_path = Path(file_name_or_path)
+def load_data_config(file_name_or_path="data.yaml"):
+    config_file_path = _UTILS_DIR / file_name_or_path
+    if not config_file_path.exists():
+        print(f"WARN: utils.py: Config file '{config_file_path}' not found. Trying '{file_name_or_path}' from CWD.")
+        config_file_path = Path(file_name_or_path)
+        if not config_file_path.exists():
+            print(f"ERROR: utils.py: Config file '{file_name_or_path}' not found. Returning empty config.")
+            return {}
     try:
-        with open(config_path, "r") as fh:
-            data = yaml.safe_load(fh)
-            return data or {}
-    except Exception as exc:
-        print(f"ERROR: utils.py: Could not load YAML '{config_path}': {exc}")
+        with open(config_file_path, "r") as stream:
+            config = yaml.safe_load(stream)
+        return config if config else {}
+    except Exception as e:
+        print(f"ERROR: utils.py: Failed to load/parse YAML from '{config_file_path}': {e}")
         traceback.print_exc()
         return {}
 
+# Load base configurations from data.yaml and datasets.yaml
+# These files are expected to be in the same directory as utils.py (i.e., metagpt/ext/sela/)
+DATA_CONFIG = load_data_config("data.yaml")
+DATASET_METADATA_CONFIG = load_data_config("datasets.yaml")
 
-# Base configuration comes from the repo‑level YAML files --------------------
-DATA_CONFIG: dict = _load_yaml("data.yaml")
-DATASET_METADATA_CONFIG: dict = _load_yaml("datasets.yaml")
+# --- SELA Specific Path Configuration & Overrides ---
+# These paths are critical for SELA operations and will override any values
+# loaded from data.yaml if they conflict, ensuring consistency.
 
-###############################################################################
-# Path resolution                                                             #
-###############################################################################
+# 1. Input datasets directory (where raw data like train.csv is located)
+SELA_INPUT_DATASETS_DIR = "/repository/datasets/" # Your specified input path
+DATA_CONFIG["datasets_dir"] = SELA_INPUT_DATASETS_DIR
+# print(f"INFO: utils.py: SELA 'datasets_dir' (for raw input) is set to: {SELA_INPUT_DATASETS_DIR}") # Already printed in STDOUT
 
-# 1. Where raw, *input* datasets live ----------------------------------------
-#    (Only overridden here if absent so that data.yaml or SELA_DATASETS_DIR can win.)
-DATA_CONFIG.setdefault("datasets_dir", "/repository/datasets/")
+# 2. Main SELA working directory (for temporary files, run outputs, logs etc.)
+SELA_MAIN_WORK_DIR = "/tmp/sela/workspace" 
+DATA_CONFIG["work_dir"] = SELA_MAIN_WORK_DIR
+# print(f"INFO: utils.py: SELA 'work_dir' is set to: {SELA_MAIN_WORK_DIR}") # Already printed in STDOUT
 
-# 2. Where **this run** should store every artefact --------------------------
-_env_work_dir = os.getenv("SELA_WORK_DIR")
-if _env_work_dir:  # Highest priority: explicit environment variable
-    DATA_CONFIG["work_dir"] = _env_work_dir
-else:  # Else respect whatever overwrite_data_yaml.sh placed in data.yaml, or fall back.
-    DATA_CONFIG.setdefault("work_dir", "/tmp/sela/workspace")
+# 3. Output directory for processed datasets (splits, info.json) generated by dataset.py
+SELA_PROCESSED_OUTPUT_DIR = str(Path(SELA_MAIN_WORK_DIR) / "sela_datasets_output")
+DATA_CONFIG["processed_datasets_output_dir"] = SELA_PROCESSED_OUTPUT_DIR
+# print(f"INFO: utils.py: SELA 'processed_datasets_output_dir' is set to: {SELA_PROCESSED_OUTPUT_DIR}") # Already printed in STDOUT
 
-# 3. Derived: where processed splits, info.json, etc. should be written ------
-DATA_CONFIG["processed_datasets_output_dir"] = str(
-    Path(DATA_CONFIG["work_dir"]) / "sela_datasets_output"
-)
+# 4. Role directory (usually relative to work_dir for other MetaGPT components)
+DATA_CONFIG.setdefault("role_dir", "storage/SELA") # Keep from data.yaml or default
+# print(f"INFO: utils.py: SELA 'role_dir' is set to: {DATA_CONFIG['role_dir']}") # Already printed in STDOUT
 
-# 4. Other misc defaults ------------------------------------------------------
-DATA_CONFIG.setdefault("role_dir", "storage/SELA")
-# Merge dataset‑specific metadata
+# 5. Merge dataset-specific metadata from datasets.yaml into DATA_CONFIG
 DATA_CONFIG["datasets"] = DATASET_METADATA_CONFIG.get("datasets", {})
+# print(f"INFO: utils.py: Loaded {len(DATA_CONFIG.get('datasets', {}))} dataset metadata entries from datasets.yaml.") # Already printed
 
-DEFAULT_DATASETS_YAML_PATH = _UTILS_DIR / "datasets.yaml"  # for code that appends
+# Path to the main datasets.yaml that SELA uses/updates
+DEFAULT_DATASETS_YAML_PATH = _UTILS_DIR / "datasets.yaml"
+# --- End of SELA Specific Path Configuration ---
 
-print(
-    "INFO: utils.py: DATA_CONFIG initialised →\n" + yaml.dump(DATA_CONFIG, default_flow_style=False, sort_keys=False)
-)
 
-###############################################################################
-# Logging helper                                                              #
-###############################################################################
+# (Original functions from your utils.py - ensure they are all present)
+def get_mcts_logger():
+    logfile_level = DATA_CONFIG.get("logfile_level", "DEBUG") 
+    name: str = None
+    current_date = datetime.now()
+    formatted_date = current_date.strftime("%Y%m%d")
+    log_name = f"{name}_{formatted_date}" if name else formatted_date
 
-def _configure_logger() -> _logger.__class__:
-    logfile_level = DATA_CONFIG.get("logfile_level", "DEBUG")
-    today = datetime.now().strftime("%Y%m%d")
-    log_name = f"{today}"
+    # Attempt to remove existing handlers to prevent duplicate logging if function is called multiple times
+    # This might fail if no handlers are present yet, so wrap in try-except
+    try: _logger.remove() 
+    except ValueError: pass
 
-    try:
-        _logger.remove()
-    except ValueError:
-        pass  # no handler yet
+    _logger.level("MCTS", color="<green>", no=25) 
 
-    _logger.level("MCTS", color="<green>", no=25)
+    log_dir_base = Path(DATA_CONFIG.get("work_dir", ".")) / DATA_CONFIG.get("role_dir", "logs_fallback")
+    log_dir_base.mkdir(parents=True, exist_ok=True)
+    log_file_path = log_dir_base / f"{log_name}.txt"
 
-    log_dir = Path(DATA_CONFIG["work_dir"]) / DATA_CONFIG["role_dir"]
-    log_dir.mkdir(parents=True, exist_ok=True)
-
-    _logger.add(sys.stderr, level="INFO")
-    _logger.add(log_dir / f"{log_name}.txt", level=logfile_level, rotation="10 MB", retention="7 days")
+    _logger.add(sys.stderr, level="INFO") 
+    _logger.add(log_file_path, level=logfile_level, rotation="10 MB", retention="7 days") # Added rotation/retention
+    # print(f"INFO: utils.py: MCTS Logger configured. Log file: {log_file_path} (Level: {logfile_level})") # Already printed
     _logger.propagate = False
     return _logger
 
+mcts_logger = get_mcts_logger() # Initialize once when module is loaded
 
-mcts_logger = _configure_logger()
+def get_exp_pool_path(task_name, data_config_param, pool_name="analysis_pool"):
+    input_datasets_dir = data_config_param.get("datasets_dir") 
+    if not input_datasets_dir:
+        raise ValueError("'datasets_dir' (for input) not in data_config_param for get_exp_pool_path")
+    dataset_specific_input_path = Path(input_datasets_dir) / task_name
+    exp_pool_file_path = dataset_specific_input_path / f"{pool_name}.json"
+    
+    print(f"INFO: utils.py: Looking for exp_pool '{pool_name}.json' at: {exp_pool_file_path}")
+    return str(exp_pool_file_path) if exp_pool_file_path.exists() else None
 
-###############################################################################
-# Notebook utilities                                                          #
-###############################################################################
-
-def get_exp_pool_path(task_name: str, data_config_param: dict, pool_name: str = "analysis_pool") -> str | None:
-    """Return the full path to *analysis_pool.json* for a given dataset if present."""
-    datasets_dir = data_config_param.get("datasets_dir")
-    if not datasets_dir:
-        raise ValueError("'datasets_dir' not provided in data_config_param")
-    candidate = Path(datasets_dir) / task_name / f"{pool_name}.json"
-    print(f"INFO: Looking for {pool_name}.json at: {candidate}")
-    return str(candidate) if candidate.exists() else None
-
-
-def change_plan(role: Role, plan: str) -> bool:
-    """Swap the *plan* of the **first unfinished** task. Return *True* if all tasks were already finished."""
+def change_plan(role, plan): # Role type hint needs 'Role' to be defined
     print(f"Change next plan to: {plan}")
-    if not (
-        hasattr(role, "planner") and hasattr(role.planner, "plan") and hasattr(role.planner.plan, "tasks")
-    ):
-        print("WARN: change_plan – Role, planner, or tasks missing → cannot update plan.")
-        return False
-
+    if not hasattr(role, 'planner') or not hasattr(role.planner, 'plan') or not hasattr(role.planner.plan, 'tasks'):
+        print("WARN: utils.py: change_plan - Role, planner, or tasks not found as expected.")
+        return False # Cannot change plan if structure is not as expected
+        
     tasks = role.planner.plan.tasks
-    for idx, task in enumerate(tasks):
-        if not task.code:
-            tasks[idx].plan = plan  # first unfinished
-            return False
-    return True  # all tasks finished
+    finished = True
+    task_idx_to_update = -1
+    for i, task in enumerate(tasks):
+        if not task.code: # Assuming task.code signifies incompleteness
+            finished = False
+            task_idx_to_update = i
+            break
+    if not finished and task_idx_to_update != -1:
+        tasks[task_idx_to_update].plan = plan # Update the plan of the first unfinished task
+    return finished
 
-
-def _is_cell_to_delete(cell: NotebookNode) -> bool:
-    if cell.get("outputs"):
-        return any("traceback" in output for output in cell["outputs"] if output)
+def is_cell_to_delete(cell: NotebookNode) -> bool: # Uses NotebookNode
+    if "outputs" in cell:
+        for output in cell["outputs"]:
+            if output and "traceback" in output:
+                return True
     return False
 
-
-def _process_cells(nb: NotebookNode) -> NotebookNode:
-    """Strip traceback cells and renumber execution_count sequentially."""
-    new_cells, exec_count = [], 1
+def process_cells(nb: NotebookNode) -> NotebookNode: # Uses NotebookNode
+    new_cells = []
+    exec_count = 1
     for cell in nb["cells"]:
         if cell["cell_type"] == "code":
-            if not _is_cell_to_delete(cell):
+            if not is_cell_to_delete(cell):
                 cell["execution_count"] = exec_count
-                exec_count += 1
                 new_cells.append(cell)
-        else:
+                exec_count += 1
+        else: # Keep non-code cells (like markdown)
             new_cells.append(cell)
     nb["cells"] = new_cells
     return nb
 
-
-def save_notebook(role: Role, save_dir: str = "", name: str = "", save_to_depth: bool = False) -> None:
-    base = Path(save_dir) if save_dir else Path(DATA_CONFIG["work_dir"]) / "notebook_outputs"
-    base.mkdir(parents=True, exist_ok=True)
-
-    if not (hasattr(role, "execute_code") and hasattr(role.execute_code, "nb")):
-        print("WARN: save_notebook – role.execute_code.nb missing.")
+def save_notebook(role: Role, save_dir: str = "", name: str = "", save_to_depth=False): # Role type hint
+    save_path_base = Path(save_dir) if save_dir else Path(DATA_CONFIG.get("work_dir", ".")) / "notebook_outputs"
+    save_path_base.mkdir(parents=True, exist_ok=True)
+    
+    if not hasattr(role, 'execute_code') or not hasattr(role.execute_code, 'nb'):
+        print("WARN: utils.py: save_notebook - role.execute_code.nb not found.")
         return
+    if not hasattr(role, 'planner') or not hasattr(role.planner, 'plan') or not hasattr(role.planner.plan, 'tasks'):
+        print("WARN: utils.py: save_notebook - role.planner.plan.tasks not found for saving clean notebook.")
+        save_to_depth = False # Cannot save clean version
 
-    cleaned = _process_cells(role.execute_code.nb)
-    fname = name or f"notebook_run_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    nbformat.write(cleaned, base / f"{fname}.ipynb")
-    print(f"INFO: Notebook saved to {base/f'{fname}.ipynb'}")
+    nb_to_save = process_cells(role.execute_code.nb)
+    
+    file_name_final = name if name else f"notebook_run_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    file_path_full = save_path_base / f"{file_name_final}.ipynb"
+    nbformat.write(nb_to_save, file_path_full)
+    print(f"INFO: utils.py: Notebook saved to {file_path_full}")
 
-    if save_to_depth and hasattr(role, "planner"):
-        codes = [t.code for t in role.planner.plan.tasks if t.code]
-        depth_nb = nbformat.v4.new_notebook()
-        depth_nb.cells = [nbformat.v4.new_code_cell(c) for c in codes]
-        nbformat.write(depth_nb, base / f"{fname}_clean.ipynb")
-        print(f"INFO: Cleaned notebook saved to {base/f'{fname}_clean.ipynb'}")
+    if save_to_depth:
+        clean_file_path_full = save_path_base / f"{file_name_final}_clean.ipynb"
+        tasks = role.planner.plan.tasks
+        codes = [task.code for task in tasks if task.code]
+        clean_nb_notebook = nbformat.v4.new_notebook() # Renamed variable
+        for code_block in codes:
+            clean_nb_notebook.cells.append(nbformat.v4.new_code_cell(code_block))
+        nbformat.write(clean_nb_notebook, clean_file_path_full)
+        print(f"INFO: utils.py: Cleaned notebook saved to {clean_file_path_full}")
 
-###############################################################################
-# Misc helpers                                                                #
-###############################################################################
+async def load_execute_notebook(role: Role): # Role type hint
+    if not hasattr(role, 'planner') or not hasattr(role.planner, 'plan') or not hasattr(role.planner.plan, 'tasks'):
+        print("ERROR: utils.py: load_execute_notebook - role.planner.plan.tasks not found.")
+        return None
+    if not hasattr(role, 'execute_code'):
+        print("ERROR: utils.py: load_execute_notebook - role.execute_code not found.")
+        return None
+        
+    tasks = role.planner.plan.tasks
+    codes = [task.code for task in tasks if task.code]
+    executor = role.execute_code
+    executor.nb = nbformat.v4.new_notebook()
+    timeout_val = getattr(role, 'role_timeout', 600) 
+    
+    if not hasattr(executor, 'nb_client') or not isinstance(executor.nb_client, NotebookClient):
+         # Initialize nb_client if missing or wrong type
+        executor.nb_client = NotebookClient(executor.nb, timeout=timeout_val)
 
-def clean_json_from_rsp(text: str) -> str:
-    """Extract a JSON block from a model response wrapped in ```json ... ``` fences."""
-    if not isinstance(text, str):
+    print(f"INFO: utils.py: Preparing to execute loaded notebook with {len(codes)} code cells.")
+    for idx, code_block in enumerate(codes):
+        print(f"INFO: utils.py: Executing block {idx+1}/{len(codes)}")
+        try:
+            outputs, success = await executor.run(code_block)
+            print(f"  Execution success: {success}")
+            if not success:
+                print(f"  Block {idx+1} FAILED. Output: {outputs}")
+                break 
+        except Exception as e_exec:
+            print(f"ERROR: utils.py: Exception during notebook execution of block {idx+1}: {e_exec}")
+            traceback.print_exc()
+            break
+    print("INFO: utils.py: Finished executing loaded notebook.")
+    return executor
+
+def clean_json_from_rsp(text):
+    if not isinstance(text, str): return ""
+    pattern = r"```json(.*?)```"
+    matches = re.findall(pattern, text, re.DOTALL)
+    if matches:
+        json_str = "".join(matches).strip()
+        if (json_str.startswith('{') and json_str.endswith('}')) or \
+           (json_str.startswith('[') and json_str.endswith(']')):
+            print("INFO: utils.py: Extracted JSON from ```json ... ``` block.")
+            return json_str
+        else:
+            print("WARN: utils.py: Found ```json ... ``` block but content doesn't look like valid JSON.")
+            return "" 
+    else: 
+        text_stripped = text.strip()
+        if (text_stripped.startswith('{') and text_stripped.endswith('}')) or \
+           (text_stripped.startswith('[') and text_stripped.endswith(']')):
+            try:
+                json.loads(text_stripped) 
+                print("INFO: utils.py: Text itself appears to be a valid JSON string.")
+                return text_stripped
+            except json.JSONDecodeError:
+                print("WARN: utils.py: Text seemed like JSON but failed to parse.")
+                return "" 
         return ""
 
-    fenced = re.findall(r"```json(.*?)```", text, re.DOTALL)
-    if fenced:
-        json_str = "".join(fenced).strip()
-    else:
-        json_str = text.strip()
-
-    try:
-        json.loads(json_str)
-        return json_str
-    except json.JSONDecodeError:
-        return ""
-
-print("INFO: utils.py loaded – unified DATA_CONFIG ready for SELA.")
+print("INFO: utils.py: SELA utils module loaded and DATA_CONFIG configured with SELA specific paths.")
